@@ -57,7 +57,7 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
   def blockingReady(node: Node, timeout: Long)(implicit time: JTime): Boolean = {
     require(timeout >=0, "timeout should be >= 0")
     client.ready(node, time.milliseconds()) || pollUntil(timeout) { (_, now) =>
-      if (client.isReady(node, now))
+      if (client.isReady(node, now))// 检测Node是否Ready
         true
       else if (client.connectionFailed(node))
         throw new IOException(s"Connection to $node failed")
@@ -75,7 +75,7 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
    * care.
    */
   def blockingSendAndReceive(request: ClientRequest)(implicit time: JTime): ClientResponse = {
-    client.send(request, time.milliseconds())
+    client.send(request, time.milliseconds())// 发送请求
 
     pollContinuously { responses =>
       val response = responses.find { response =>
@@ -103,13 +103,13 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
    */
   private def pollUntil(timeout: Long)(predicate: (Seq[ClientResponse], Long) => Boolean)(implicit time: JTime): Boolean = {
     val methodStartTime = time.milliseconds()
-    val timeoutExpiryTime = methodStartTime + timeout
+    val timeoutExpiryTime = methodStartTime + timeout// 计算超时时间
 
     @tailrec
     def recursivePoll(iterationStartTime: Long): Boolean = {
       val pollTimeout = timeoutExpiryTime - iterationStartTime
       val responses = client.poll(pollTimeout, iterationStartTime).asScala
-      if (predicate(responses, iterationStartTime)) true
+      if (predicate(responses, iterationStartTime)) true // 连接建立
       else {
         val afterPollTime = time.milliseconds()
         if (afterPollTime < timeoutExpiryTime) recursivePoll(afterPollTime)
@@ -117,6 +117,7 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
       }
     }
 
+    // 递归入口
     recursivePoll(methodStartTime)
   }
 
@@ -133,6 +134,8 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
     @tailrec
     def recursivePoll: T = {
       // rely on request timeout to ensure we don't block forever
+      // 下面的poll()设置的超时时间虽然是Long.MaxValue，但是并不会永远阻塞，
+      // 因为还有ClientRequest的超时时间
       val responses = client.poll(Long.MaxValue, time.milliseconds()).asScala
       collect(responses) match {
         case Some(result) => result
@@ -140,6 +143,7 @@ class NetworkClientBlockingOps(val client: NetworkClient) extends AnyVal {
       }
     }
 
+    // 递归入口
     recursivePoll
   }
 

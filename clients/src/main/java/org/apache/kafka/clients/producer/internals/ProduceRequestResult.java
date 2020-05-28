@@ -31,6 +31,7 @@ public final class ProduceRequestResult {
 
     private final CountDownLatch latch = new CountDownLatch(1);
     private volatile TopicPartition topicPartition;
+    // Broker为此RecordBatch中的第一条消息分配的offset
     private volatile long baseOffset = -1L;
     private volatile RuntimeException error;
 
@@ -47,7 +48,7 @@ public final class ProduceRequestResult {
         this.topicPartition = topicPartition;
         this.baseOffset = baseOffset;
         this.error = error;
-        this.latch.countDown();
+        this.latch.countDown();// 会唤醒阻塞在CountDownLatch对象的await()方法的线程
     }
 
     /**

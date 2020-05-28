@@ -27,6 +27,7 @@ import org.apache.kafka.common.utils.Utils
 /**
  * A thread that answers kafka requests.
  */
+// 主要是从RequestChannel获取请求并调用KafkaApis.handle()方法处理请求
 class KafkaRequestHandler(id: Int,
                           brokerId: Int,
                           val aggregateIdleMeter: Meter,
@@ -45,6 +46,7 @@ class KafkaRequestHandler(id: Int,
           // time_window is independent of the number of threads, each recorded idle
           // time should be discounted by # threads.
           val startSelectTime = SystemTime.nanoseconds
+          // 从requestQueue里获取请求
           req = requestChannel.receiveRequest(300)
           val idleTime = SystemTime.nanoseconds - startSelectTime
           aggregateIdleMeter.mark(idleTime / totalHandlerThreads)
@@ -57,6 +59,9 @@ class KafkaRequestHandler(id: Int,
         }
         req.requestDequeueTimeMs = SystemTime.milliseconds
         trace("Kafka request handler %d on broker %d handling request %s".format(id, brokerId, req))
+        // KafkaApis类中实现了处理请求的逻辑，KafkaApis还负责将响应写回对应的
+        // RequestChannel.responseQueue中，唤醒Processor处理
+        // 执行具体的请求逻辑
         apis.handle(req)
       } catch {
         case e: Throwable => error("Exception when handling request", e)
@@ -76,9 +81,11 @@ class KafkaRequestHandlerPool(val brokerId: Int,
   private val aggregateIdleMeter = newMeter("RequestHandlerAvgIdlePercent", "percent", TimeUnit.NANOSECONDS)
 
   this.logIdent = "[Kafka Request Handler on Broker " + brokerId + "], "
+  // 用于保存执行KafkaRequestHandler线程
   val threads = new Array[Thread](numThreads)
   val runnables = new Array[KafkaRequestHandler](numThreads)
-  for(i <- 0 until numThreads) {
+  for(i <- 0 until numThreads) {// 8个工作线程
+    // 创建KafkaRequestHandler对象及其对应线程
     runnables(i) = new KafkaRequestHandler(i, brokerId, aggregateIdleMeter, numThreads, requestChannel, apis)
     threads(i) = Utils.daemonThread("kafka-request-handler-" + i, runnables(i))
     threads(i).start()
@@ -87,9 +94,9 @@ class KafkaRequestHandlerPool(val brokerId: Int,
   def shutdown() {
     info("shutting down")
     for(handler <- runnables)
-      handler.shutdown
+      handler.shutdown// 停止所有KafkaRequestHandler线程
     for(thread <- threads)
-      thread.join
+      thread.join// 阻塞等待所有KafkaRequestHandler线程结束
     info("shut down completely")
   }
 }

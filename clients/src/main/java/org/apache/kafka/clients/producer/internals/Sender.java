@@ -131,6 +131,7 @@ public class Sender implements Runnable {
         // main loop, runs until close is called
         while (running) {
             try {
+                // sender线程会走到这里，下面是逻辑是关闭producer才会走的
                 run(time.milliseconds());
             } catch (Exception e) {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
@@ -172,9 +173,11 @@ public class Sender implements Runnable {
     void run(long now) {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
+        // 根据RecordAccumulator的缓存情况，获取哪些node上的partition是有数据准备发送的
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        // 如果leader partition不存在，更新元数据
         if (result.unknownLeadersExist)
             this.metadata.requestUpdate();
 
@@ -183,6 +186,7 @@ public class Sender implements Runnable {
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
             Node node = iter.next();
+            // 建立tcp socket连接，检查网络IO方面是否符合要求，不符合删除readyNodes中的node
             if (!this.client.ready(node, now)) {
                 iter.remove();
                 notReadyTimeout = Math.min(notReadyTimeout, this.client.connectionDelay(node, now));
@@ -190,6 +194,7 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+        // 获取batch，获取待发送消息的集合
         Map<Integer, List<RecordBatch>> batches = this.accumulator.drain(cluster,
                                                                          result.readyNodes,
                                                                          this.maxRequestSize,
@@ -208,6 +213,7 @@ public class Sender implements Runnable {
             this.sensors.recordErrors(expiredBatch.topicPartition.topic(), expiredBatch.recordCount);
 
         sensors.updateProduceRequestMetrics(batches);
+        // 把batch放到request里
         List<ClientRequest> requests = createProduceRequests(batches, now);
         // If we have any nodes that are ready to send + have sendable data, poll with 0 timeout so this can immediately
         // loop and try sending more data. Otherwise, the timeout is determined by nodes that have partitions with data
@@ -220,12 +226,14 @@ public class Sender implements Runnable {
             pollTimeout = 0;
         }
         for (ClientRequest request : requests)
+            // 发送请求，把request缓存,然后放到KafkaChannel里
             client.send(request, now);
 
         // if some partitions are already ready to be sent, the select time would be 0;
         // otherwise if some partition already has some data accumulated but not ready yet,
         // the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
+        // sender线程真正读写socket是通过NetworkClient的
         this.client.poll(pollTimeout, now);
     }
 
@@ -309,8 +317,8 @@ public class Sender implements Runnable {
             else
                 exception = error.exception();
             // tell the user the result of their request
-            batch.done(baseOffset, timestamp, exception);
-            this.accumulator.deallocate(batch);
+            batch.done(baseOffset, timestamp, exception);// 整个请求完成了
+            this.accumulator.deallocate(batch);// 释放内存到BufferPool缓冲池
             if (error != Errors.NONE)
                 this.sensors.recordErrors(batch.topicPartition.topic(), batch.recordCount);
         }

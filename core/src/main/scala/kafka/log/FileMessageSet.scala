@@ -43,13 +43,16 @@ import scala.collection.mutable.ArrayBuffer
  * @param isSlice Should the start and end parameters be used for slicing?
  */
 @nonthreadsafe
-class FileMessageSet private[kafka](@volatile var file: File,
-                                    private[log] val channel: FileChannel,
-                                    private[log] val start: Int,
-                                    private[log] val end: Int,
-                                    isSlice: Boolean) extends MessageSet with Logging {
+class FileMessageSet private[kafka](@volatile var file: File,// 指向磁盘上对应的日志文件
+                                    private[log] val channel: FileChannel,// 用于读写对应的日志文件
+                                    private[log] val start: Int,// 分片（Slice）的起始位置
+                                    private[log] val end: Int,// 分片（Slice）的结束位置
+                                    isSlice: Boolean// 当前FileMessageSet是否为日志的分片。
+                                    // FileMessageSet除了可以表示一个完整的日志文件，还可以表示日志分片
+                                   ) extends MessageSet with Logging {
 
   /* the size of the message set in bytes */
+  // FileMessageSet的大小，单位是字节
   private val _size =
     if(isSlice)
       new AtomicInteger(end - start) // don't check the file size if this is just a slice view
@@ -57,6 +60,9 @@ class FileMessageSet private[kafka](@volatile var file: File,
       new AtomicInteger(math.min(channel.size.toInt, end) - start)
 
   /* if this is not a slice, update the file pointer to the end of the file */
+  // 将position移动到最后一个字节，之后就可以从此position开始写消息。注意，对于分片FileMessageSet可以尝试
+  // 跟踪一下代码，会发现写入操作
+  // （FileMessageSet.append()方法）的都是非分片的FileMessageSet对象
   if (!isSlice)
     /* set the file position to the last byte in the file */
     channel.position(math.min(channel.size.toInt, end))
@@ -81,6 +87,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
    */
   def this(file: File, fileAlreadyExists: Boolean, initFileSize: Int, preallocate: Boolean) =
       this(file,
+        // 如果使用preallocate进行预分配空间，end会被初始化为0
         channel = FileMessageSet.openChannel(file, mutable = true, fileAlreadyExists, initFileSize, preallocate),
         start = 0,
         end = ( if ( !fileAlreadyExists && preallocate ) 0 else Int.MaxValue),
@@ -126,6 +133,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
    * @param targetOffset The offset to search for.
    * @param startingPosition The starting position in the file to begin searching from.
    */
+  // 查找指定的消息
   def searchFor(targetOffset: Long, startingPosition: Int): OffsetPosition = {
     var position = startingPosition
     val buffer = ByteBuffer.allocate(MessageSet.LogOverhead)
@@ -155,6 +163,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
    * @param size The maximum number of bytes to write
    * @return The number of bytes actually written.
    */
+  // 将FileMessageSet中的数据写入指定的其他Channel中
   def writeTo(destChannel: GatheringByteChannel, writePosition: Long, size: Int): Int = {
     // Ensure that the underlying size has not changed.
     val newSize = math.min(channel.size.toInt, end) - start
@@ -162,9 +171,10 @@ class FileMessageSet private[kafka](@volatile var file: File,
       throw new KafkaException("Size of FileMessageSet %s has been truncated during write: old size %d, new size %d"
         .format(file.getAbsolutePath, _size.get(), newSize))
     }
-    val position = start + writePosition
-    val count = math.min(size, sizeInBytes)
+    val position = start + writePosition// 计算起始位置
+    val count = math.min(size, sizeInBytes)// 计算发送字节
     val bytesTransferred = (destChannel match {
+      // 底层是调用FileChannel.transferTo()方法，实现的“零拷贝”
       case tl: TransportLayer => tl.transferFrom(channel, position, count)
       case dc => channel.transferTo(position, count, dc)
     }).toInt
@@ -293,9 +303,10 @@ class FileMessageSet private[kafka](@volatile var file: File,
   /**
    * Append these messages to the message set
    */
+  // 写日志文件
   def append(messages: ByteBufferMessageSet) {
-    val written = messages.writeFullyTo(channel)
-    _size.getAndAdd(written)
+    val written = messages.writeFullyTo(channel)// 写文件
+    _size.getAndAdd(written)// 修改FileMessageSet的大小
   }
 
   /**
@@ -386,21 +397,21 @@ object FileMessageSet
    * @param preallocate Pre allocate file or not, gotten from configuration.
    */
   def openChannel(file: File, mutable: Boolean, fileAlreadyExists: Boolean = false, initFileSize: Int = 0, preallocate: Boolean = false): FileChannel = {
-    if (mutable) {
+    if (mutable) {// 根据mutable参数创建的FileChannel是否可写
       if (fileAlreadyExists)
         new RandomAccessFile(file, "rw").getChannel()
       else {
-        if (preallocate) {
+        if (preallocate) {// 进行文件预分配
           val randomAccessFile = new RandomAccessFile(file, "rw")
           randomAccessFile.setLength(initFileSize)
           randomAccessFile.getChannel()
         }
         else
-          new RandomAccessFile(file, "rw").getChannel()
+          new RandomAccessFile(file, "rw").getChannel()// 创建可读写的FileChannel
       }
     }
     else
-      new FileInputStream(file).getChannel()
+      new FileInputStream(file).getChannel()// 创建只读的FileChannel
   }
 }
 

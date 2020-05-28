@@ -47,7 +47,9 @@ public class ConsumerNetworkClient implements Closeable {
 
     private final KafkaClient client;
     private final AtomicBoolean wakeup = new AtomicBoolean(false);
+    // 定时任务队列
     private final DelayedTaskQueue delayedTasks = new DelayedTaskQueue();
+    // 缓冲队列
     private final Map<Node, List<ClientRequest>> unsent = new HashMap<>();
     private final Metadata metadata;
     private final Time time;
@@ -216,28 +218,35 @@ public class ConsumerNetworkClient implements Closeable {
 
     private void poll(long timeout, long now, boolean executeDelayedTasks) {
         // send all the requests we can send now
+        // 处理unsent中缓存的请求
         trySend(now);
 
         // ensure we don't poll any longer than the deadline for
         // the next scheduled task
+        // 计算超时时间
         timeout = Math.min(timeout, delayedTasks.nextTimeout(now));
+        // 调用NetworkClient.poll()方法，并检测是否有中断请求
         clientPoll(timeout, now);
         now = time.milliseconds();
 
         // handle any disconnects by failing the active requests. note that disconnects must
         // be checked immediately following poll since any subsequent call to client.ready()
         // will reset the disconnect status
+        // 根据连接状态，处理unsent中的请求
         checkDisconnects(now);
 
         // execute scheduled tasks
+        // 处理定时任务
         if (executeDelayedTasks)
             delayedTasks.poll(now);
 
         // try again to send requests since buffer space may have been
         // cleared or a connect finished in the poll
+        // 检测发送条件，重新设置KafkaChannel.send字段，并超时断线重连
         trySend(now);
 
         // fail requests that couldn't be sent if they have expired
+        // 处理unsent中的超时任务
         failExpiredRequests(now);
     }
 

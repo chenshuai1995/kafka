@@ -33,15 +33,23 @@ public final class RecordBatch {
 
     private static final Logger log = LoggerFactory.getLogger(RecordBatch.class);
 
+    // 记录了保存的Record的个数
     public int recordCount = 0;
+    // 最大Record的字节数
     public int maxRecordSize = 0;
+    // 尝试发送当前RecordBatch的次数
     public volatile int attempts = 0;
     public final long createdMs;
     public long drainedMs;
+    // 最后一次尝试发送的时间戳
     public long lastAttemptMs;
+    // 真正存储数据的MemoryRecords
     public final MemoryRecords records;
+    // 当前RecordBatch中的消息，都是发送给这个TopicPartition的
     public final TopicPartition topicPartition;
+    // 标识RecordBatch状态的Future对象
     public final ProduceRequestResult produceFuture;
+    // 最后一次向RecordBatch追加的时间戳
     public long lastAppendTime;
     private final List<Thunk> thunks;
     private long offsetCounter = 0L;
@@ -64,19 +72,24 @@ public final class RecordBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Callback callback, long now) {
+        // 估算剩余空间是否充足，不是一个准确值
         if (!this.records.hasRoomFor(key, value)) {
             return null;
         } else {
+            // 最终写到byteBuffer里
+            // 向MemoryRecords里添加数据。注意，offsetCounter是在RecordBatch中的偏移量
             long checksum = this.records.append(offsetCounter++, timestamp, key, value);
             this.maxRecordSize = Math.max(this.maxRecordSize, Record.recordSize(key, value));
             this.lastAppendTime = now;
+            // 创建FutureRecordMetadata对象
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, checksum,
                                                                    key == null ? -1 : key.length,
                                                                    value == null ? -1 : value.length);
+            // 将用户自定义的callback和FeatureRecordMetadata封装成thunks，保存到thunks集合中
             if (callback != null)
                 thunks.add(new Thunk(callback, future));
-            this.recordCount++;
+            this.recordCount++;// 更新recordCount++
             return future;
         }
     }
@@ -112,6 +125,7 @@ public final class RecordBatch {
                 log.error("Error executing user-provided callback on message for topic-partition {}:", topicPartition, e);
             }
         }
+        // 标记整个RecordBatch都处理完成了
         this.produceFuture.done(topicPartition, baseOffset, exception);
     }
 
@@ -140,6 +154,7 @@ public final class RecordBatch {
      *     <li> the batch is in retry AND request timeout has elapsed after the backoff period ended.
      * </ol>
      */
+    // RecordBatch收到发送超时时
     public boolean maybeExpire(int requestTimeoutMs, long retryBackoffMs, long now, long lingerMs, boolean isFull) {
         boolean expire = false;
 

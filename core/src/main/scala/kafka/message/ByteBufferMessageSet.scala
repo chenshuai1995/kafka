@@ -37,24 +37,27 @@ object ByteBufferMessageSet {
                      wrapperMessageTimestamp: Option[Long],
                      timestampType: TimestampType,
                      messages: Message*): ByteBuffer = {
-    if (messages.isEmpty)
+    if (messages.isEmpty)// 情况1：处理messages集合为空的情况
       MessageSet.Empty.buffer
-    else if (compressionCodec == NoCompressionCodec) {
+    else if (compressionCodec == NoCompressionCodec) {// 情况2：不需要对message集合进行压缩
       val buffer = ByteBuffer.allocate(MessageSet.messageSetSize(messages))
-      for (message <- messages) writeMessage(buffer, message, offsetAssigner.nextAbsoluteOffset())
+      for (message <- messages)// 为每个消息分配offset，并写入buffer
+        writeMessage(buffer, message, offsetAssigner.nextAbsoluteOffset())
       buffer.rewind()
-      buffer
-    } else {
+      buffer// 返回buffer
+    } else {// 情况3：处理压缩的情况
       val magicAndTimestamp = wrapperMessageTimestamp match {
         case Some(ts) => MagicAndTimestamp(messages.head.magic, ts)
         case None => MessageSet.magicAndLargestTimestamp(messages)
       }
       var offset = -1L
+      // 底层使用byte数组保存写入的压缩数据
       val messageWriter = new MessageWriter(math.min(math.max(MessageSet.messageSetSize(messages) / 2, 1024), 1 << 16))
       messageWriter.write(codec = compressionCodec, timestamp = magicAndTimestamp.timestamp, timestampType = timestampType, magicValue = magicAndTimestamp.magic) { outputStream =>
+        // 创建指定压缩类型的输出流
         val output = new DataOutputStream(CompressionFactory(compressionCodec, magicAndTimestamp.magic, outputStream))
         try {
-          for (message <- messages) {
+          for (message <- messages) {// 遍历写入内层压缩消息
             offset = offsetAssigner.nextAbsoluteOffset()
             if (message.magic != magicAndTimestamp.magic)
               throw new IllegalArgumentException("Messages in the message set must have same magic value")
@@ -63,8 +66,8 @@ object ByteBufferMessageSet {
               output.writeLong(offsetAssigner.toInnerOffset(offset))
             else
               output.writeLong(offset)
-            output.writeInt(message.size)
-            output.write(message.buffer.array, message.buffer.arrayOffset, message.buffer.limit)
+            output.writeInt(message.size)// 写入size
+            output.write(message.buffer.array, message.buffer.arrayOffset, message.buffer.limit)// 写入message数据
           }
         } finally {
           output.close()
@@ -297,7 +300,7 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
   def writeFullyTo(channel: GatheringByteChannel): Int = {
     buffer.mark()
     var written = 0
-    while (written < sizeInBytes)
+    while (written < sizeInBytes)// 将ByteBufferMessageSet中的数据全部写入文件
       written += channel.write(buffer)
     buffer.reset()
     written

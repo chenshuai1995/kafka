@@ -505,16 +505,21 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private static final String JMX_PREFIX = "kafka.consumer";
 
     private final String clientId;
+    // 控制consumer和服务器GroupCoordinator之间的通信
     private final ConsumerCoordinator coordinator;
     private final Deserializer<K> keyDeserializer;
     private final Deserializer<V> valueDeserializer;
+    // 负责从服务端获取消息
     private final Fetcher<K, V> fetcher;
+    // 拦截器，在consumer.poll()之前进行拦截
     private final ConsumerInterceptors<K, V> interceptors;
 
     private final Time time;
     private final ConsumerNetworkClient client;
     private final Metrics metrics;
+    // 保存了消费者的消费状态
     private final SubscriptionState subscriptions;
+    // 整个集群的元数据
     private final Metadata metadata;
     private final long retryBackoffMs;
     private final long requestTimeoutMs;

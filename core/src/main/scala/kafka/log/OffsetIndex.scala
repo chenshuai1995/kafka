@@ -53,34 +53,40 @@ import kafka.common.InvalidOffsetException
  * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal 
  * storage format.
  */
-class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long, val maxIndexSize: Int = -1) extends Logging {
+class OffsetIndex(@volatile private[this] var _file: File,// 磁盘上的索引文件
+                  val baseOffset: Long,// 日志文件中第一个消息的offset
+                  val maxIndexSize: Int = -1
+                 ) extends Logging {
   
-  private val lock = new ReentrantLock
+  private val lock = new ReentrantLock// 对mmap加锁
   
   /* initialize the memory mapping for this index */
   @volatile
+  // 用来操作索引文件的MappedByteBuffer
   private[this] var mmap: MappedByteBuffer = {
     val newlyCreated = _file.createNewFile()
     val raf = new RandomAccessFile(_file, "rw")
     try {
       /* pre-allocate the file if necessary */
-      if (newlyCreated) {
+      if (newlyCreated) {// 对于新创建的索引文件，进行扩容
         if (maxIndexSize < 8)
           throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
         raf.setLength(roundToExactMultiple(maxIndexSize, 8))
       }
 
       /* memory-map the file */
+      // 内存映射
       val len = raf.length()
       val idx = raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, len)
 
       /* set the position in the index for the next entry */
-      if (newlyCreated)
+      if (newlyCreated)// 将新创建的索引文件的position设置为0，从头开始写文件
         idx.position(0)
       else
         // if this is a pre-existing index, assume it is all valid and set position to last entry
+        // 对于原来就存在的索引文件，则将position移动到所以索引项的结束位置，防止数据覆盖
         idx.position(roundToExactMultiple(idx.limit, 8))
-      idx
+      idx// 返回MappedByteBuffer
     } finally {
       CoreUtils.swallow(raf.close())
     }
@@ -88,13 +94,16 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
 
   /* the number of eight-byte entries currently in the index */
   @volatile
+  // 当前索引文件中的索引项个数
   private[this] var _entries = mmap.position / 8
 
   /* The maximum number of eight-byte entries this index can hold */
   @volatile
+  // 当前索引文件中最多能够保存的索引项个数
   private[this] var _maxEntries = mmap.limit / 8
 
   @volatile
+  // 保存最后一个索引项的offset
   private[this] var _lastOffset = readLastEntry.offset
   
   debug("Loaded index file %s with maxEntries = %d, maxIndexSize = %d, entries = %d, lastOffset = %d, file position = %d"
@@ -134,7 +143,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
       val idx = mmap.duplicate
-      val slot = indexSlotFor(idx, targetOffset)
+      val slot = indexSlotFor(idx, targetOffset)// 二分查找的具体实现
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
       else

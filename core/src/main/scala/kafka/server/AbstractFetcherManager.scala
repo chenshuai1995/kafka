@@ -74,17 +74,24 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   def addFetcherForPartitions(partitionAndOffsets: Map[TopicAndPartition, BrokerAndInitialOffset]) {
     mapLock synchronized {
       val partitionsPerFetcher = partitionAndOffsets.groupBy{ case(topicAndPartition, brokerAndInitialOffset) =>
+        // 首先通过分区所属的Topic和分区编号计算得到对应的Fetcher线程id，然后与Broker的网络位置信息组成key，
+        // 并进行分组。每组对应相同的Fetcher线程（AbstractFetcherThread）
+        // 注意，每个Fetcher线程只连接一个Broker，但可以为多个分区的Follower副本完成同步
         BrokerAndFetcherId(brokerAndInitialOffset.broker, getFetcherId(topicAndPartition.topic, topicAndPartition.partition))}
+      // 按照key查找相对应的Fetcher线程，查找不到就创建新的Fetcher线程并启动
       for ((brokerAndFetcherId, partitionAndOffsets) <- partitionsPerFetcher) {
         var fetcherThread: AbstractFetcherThread = null
         fetcherThreadMap.get(brokerAndFetcherId) match {
-          case Some(f) => fetcherThread = f
-          case None =>
+          case Some(f) => fetcherThread = f// 查找到Fetcher线程
+          case None => // 查找不到Fetcher线程的情况
+            // createFetcherThread()是抽象方法，在子类ReplicaFetcherManager线程中实现
             fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
+            // 添加到fetcherThreadMap中，并启动
             fetcherThreadMap.put(brokerAndFetcherId, fetcherThread)
             fetcherThread.start
         }
 
+        // 将分区信息以及同步起始位置传递给Fetcher线程，并唤醒Fetcher线程，开始同步
         fetcherThreadMap(brokerAndFetcherId).addPartitions(partitionAndOffsets.map { case (topicAndPartition, brokerAndInitOffset) =>
           topicAndPartition -> brokerAndInitOffset.initOffset
         })
@@ -95,9 +102,11 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
       "[" + topicAndPartition + ", initOffset " + brokerAndInitialOffset.initOffset + " to broker " + brokerAndInitialOffset.broker + "] "}))
   }
 
+  // 停止指定Follower副本的同步操作
   def removeFetcherForPartitions(partitions: Set[TopicAndPartition]) {
     mapLock synchronized {
       for ((key, fetcher) <- fetcherThreadMap) {
+        // 将TopicAndPartition信息从Fetcher线程中移除
         fetcher.removePartitions(partitions)
       }
     }

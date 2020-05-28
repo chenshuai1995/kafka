@@ -37,15 +37,18 @@ import scala.collection.JavaConverters._
 import scala.collection.{Set, mutable}
 import scala.collection.mutable.HashMap
 
+// KafkaControlloer使用ControllerChannelManager管理其与集群中各个Broker之间的网络交互
 class ControllerChannelManager(controllerContext: ControllerContext, config: KafkaConfig, time: Time, metrics: Metrics, threadNamePrefix: Option[String] = None) extends Logging {
   protected val brokerStateInfo = new HashMap[Int, ControllerBrokerStateInfo]
   private val brokerLock = new Object
   this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
 
+  // 为Broker创建对应的ControllerBrokerStateInfo对象
   controllerContext.liveBrokers.foreach(addNewBroker(_))
 
   def startup() = {
     brokerLock synchronized {
+      // 启动RequestSendThread线程
       brokerStateInfo.foreach(brokerState => startRequestSendThread(brokerState._1))
     }
   }
@@ -61,6 +64,7 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
       val stateInfoOpt = brokerStateInfo.get(brokerId)
       stateInfoOpt match {
         case Some(stateInfo) =>
+          // 放到一个队列里面缓存了
           stateInfo.messageQueue.put(QueueItem(apiKey, apiVersion, request, callback))
         case None =>
           warn("Not sending request %s to broker %d, since it is offline.".format(request, brokerId))
@@ -133,9 +137,10 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
 
   private def removeExistingBroker(brokerState: ControllerBrokerStateInfo) {
     try {
-      brokerState.networkClient.close()
-      brokerState.messageQueue.clear()
-      brokerState.requestSendThread.shutdown()
+      brokerState.networkClient.close()// 关闭底层连接
+      brokerState.messageQueue.clear()// 清空队列
+      brokerState.requestSendThread.shutdown()// 关闭RequestSendThread
+      // 清除ControllerBrokerStateInfo对象
       brokerStateInfo.remove(brokerState.brokerNode.id)
     } catch {
       case e: Throwable => error("Error while removing broker by the controller", e)
@@ -169,6 +174,7 @@ class RequestSendThread(val controllerId: Int,
 
     def backoff(): Unit = CoreUtils.swallowTrace(Thread.sleep(300))
 
+    // 获取缓冲队列中的QueueItem
     val QueueItem(apiKey, apiVersion, request, callback) = queue.take()
     import NetworkClientBlockingOps._
     var clientResponse: ClientResponse = null
@@ -178,10 +184,11 @@ class RequestSendThread(val controllerId: Int,
         while (isRunning.get() && !isSendSuccessful) {
           // if a broker goes down for a long time, then at some point the controller's zookeeper listener will trigger a
           // removeBroker which will invoke shutdown() on this thread. At that point, we will stop retrying.
+          // 当Broker宕机后，会触发zookeeper的监听器调用removeBroker()方法，将当前线程停止，在停止前会一直尝试重试
           try {
-            if (!brokerReady()) {
+            if (!brokerReady()) {// 阻塞等待符合发送条件
               isSendSuccessful = false
-              backoff()
+              backoff()// 退避一段时间，3s
             }
             else {
               val requestHeader = apiVersion.fold(networkClient.nextRequestHeader(apiKey))(networkClient.nextRequestHeader(apiKey, _))
@@ -201,6 +208,7 @@ class RequestSendThread(val controllerId: Int,
           }
         }
         if (clientResponse != null) {
+          // 检测请求类型，调用QueueItem中封装的回调函数
           val response = ApiKeys.forId(clientResponse.request.request.header.apiKey) match {
             case ApiKeys.LEADER_AND_ISR => new LeaderAndIsrResponse(clientResponse.responseBody)
             case ApiKeys.STOP_REPLICA => new StopReplicaResponse(clientResponse.responseBody)
@@ -248,6 +256,8 @@ class RequestSendThread(val controllerId: Int,
 
 }
 
+// 为了提高Controller Leader与集群中其他Broker的通信效率，
+// KafkaController使用ControllerBrokerRequestBatch组件实现批量发送请求的功能
 class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging {
   val controllerContext = controller.controllerContext
   val controllerId: Int = controller.config.brokerId
@@ -280,11 +290,14 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
                                        replicas: Seq[Int], callback: AbstractRequestResponse => Unit = null) {
     val topicPartition = new TopicPartition(topic, partition)
 
+    // 查找Broker对应的集合
     brokerIds.filter(_ >= 0).foreach { brokerId =>
       val result = leaderAndIsrRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty)
+      // 添加Leader、ISR、AR等构造LeaderAndIsrRequest请求需要的信息
       result.put(topicPartition, PartitionStateInfo(leaderIsrAndControllerEpoch, replicas.toSet))
     }
 
+    // 准备向所有可用的Broker发送UpdateMetadataRequest
     addUpdateMetadataRequestForBrokers(controllerContext.liveOrShuttingDownBrokerIds.toSeq,
                                        Set(TopicAndPartition(topic, partition)))
   }
@@ -307,17 +320,22 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
   def addUpdateMetadataRequestForBrokers(brokerIds: Seq[Int],
                                          partitions: collection.Set[TopicAndPartition] = Set.empty[TopicAndPartition],
                                          callback: AbstractRequestResponse => Unit = null) {
+    // 定义回调函数
     def updateMetadataRequestMapFor(partition: TopicAndPartition, beingDeleted: Boolean) {
+      // 首先找出controller中保存的该分区的Leader
       val leaderIsrAndControllerEpochOpt = controllerContext.partitionLeadershipInfo.get(partition)
       leaderIsrAndControllerEpochOpt match {
         case Some(leaderIsrAndControllerEpoch) =>
+          // 获取分区的AR集合
           val replicas = controllerContext.partitionReplicaAssignment(partition).toSet
           val partitionStateInfo = if (beingDeleted) {
+            // 根据beingDeleted参数设置leader值
             val leaderAndIsr = new LeaderAndIsr(LeaderAndIsr.LeaderDuringDelete, leaderIsrAndControllerEpoch.leaderAndIsr.isr)
             PartitionStateInfo(LeaderIsrAndControllerEpoch(leaderAndIsr, leaderIsrAndControllerEpoch.controllerEpoch), replicas)
           } else {
             PartitionStateInfo(leaderIsrAndControllerEpoch, replicas)
           }
+          // 向updateMetadataRequestMap中添加数据
           brokerIds.filter(b => b >= 0).foreach { brokerId =>
             updateMetadataRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty[TopicPartition, PartitionStateInfo])
             updateMetadataRequestMap(brokerId).put(new TopicPartition(partition.topic, partition.partition), partitionStateInfo)
@@ -327,11 +345,13 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
       }
     }
 
+    // 如果指定的分区集合为空，则需要更新全部分区
     val filteredPartitions = {
       val givenPartitions = if (partitions.isEmpty)
         controllerContext.partitionLeadershipInfo.keySet
       else
         partitions
+      // 过滤即将被删除的Partition
       if (controller.deleteTopicManager.partitionsToBeDeleted.isEmpty)
         givenPartitions
       else
@@ -342,8 +362,10 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
         updateMetadataRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty[TopicPartition, PartitionStateInfo])
       }
     else
+      // 将filteredPartitions中的分区信息添加到updateMetadataRequestMap集合中，等待发送
       filteredPartitions.foreach(partition => updateMetadataRequestMapFor(partition, beingDeleted = false))
 
+    // 将即将被删除的分区信息添加到updateMetadataRequestMap集合中
     controller.deleteTopicManager.partitionsToBeDeleted.foreach(partition => updateMetadataRequestMapFor(partition, beingDeleted = true))
   }
 
@@ -443,10 +465,11 @@ class ControllerBrokerRequestBatch(controller: KafkaController) extends  Logging
   }
 }
 
-case class ControllerBrokerStateInfo(networkClient: NetworkClient,
+case class ControllerBrokerStateInfo(networkClient: NetworkClient,// Controller与对应的Broker网络通信
                                      brokerNode: Node,
-                                     messageQueue: BlockingQueue[QueueItem],
-                                     requestSendThread: RequestSendThread)
+                                     messageQueue: BlockingQueue[QueueItem],// 缓冲队列，存放了发往对应Broker的请求
+                                     requestSendThread: RequestSendThread// 用于发送请求的线程
+                                    )
 
 case class StopReplicaRequestInfo(replica: PartitionAndReplica, deletePartition: Boolean, callback: AbstractRequestResponse => Unit = null)
 

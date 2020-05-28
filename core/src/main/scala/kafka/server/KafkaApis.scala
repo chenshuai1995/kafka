@@ -50,6 +50,9 @@ import org.apache.kafka.common.requests.SaslHandshakeResponse
 /**
  * Logic to handle the various Kafka requests
  */
+// 封装了处理不同kafka request的逻辑
+// 负责将KafkaRequestHandler传递过来的请求分发到不同的handle*()处理方法中
+// 分发的依据是RequestChannel.Request中的requestId
 class KafkaApis(val requestChannel: RequestChannel,
                 val replicaManager: ReplicaManager,
                 val coordinator: GroupCoordinator,
@@ -68,11 +71,12 @@ class KafkaApis(val requestChannel: RequestChannel,
   /**
    * Top-level method that handles all requests and multiplexes to the right api
    */
+  // 处理各种不同逻辑的请求
   def handle(request: RequestChannel.Request) {
     try {
       trace("Handling request:%s from connection %s;securityProtocol:%s,principal:%s".
         format(request.requestDesc(true), request.connectionId, request.securityProtocol, request.session.principal))
-      ApiKeys.forId(request.requestId) match {
+      ApiKeys.forId(request.requestId) match {// 根据requestId来分发请求
         case ApiKeys.PRODUCE => handleProducerRequest(request)
         case ApiKeys.FETCH => handleFetchRequest(request)
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request)
@@ -332,6 +336,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     // the callback for sending a produce response
+    // 发送消息响应的回调函数
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]) {
 
       val mergedResponseStatus = responseStatus ++ unauthorizedRequestInfo.mapValues(_ =>
@@ -350,6 +355,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
+      // 发送消息响应的回调
       def produceResponseCallback(delayTimeMs: Int) {
         if (produceRequest.acks == 0) {
           // no operation needed if producer request.required.acks = 0; however, if there is any error in handling
@@ -378,6 +384,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             case version => throw new IllegalArgumentException(s"Version `$version` of ProduceRequest is not handled. Code must be updated.")
           }
 
+          // 把response添加到responseQueues里
           requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, respBody)))
         }
       }

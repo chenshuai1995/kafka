@@ -29,12 +29,22 @@ import java.util.Set;
  */
 public final class Cluster {
 
+    // Cluster这些字段，都是private final修饰的，且提供了查询方法，没有修改方法
+    // 这个Cluster对象也就是线程安全的对象
+    // 如果以后要自己设计线程安全的对象，可以这么设计。如果必须要提供修改的方法，那么在修改方法前加线程安全的方案
+
     private final boolean isBootstrapConfigured;
+    // kafka broker
     private final List<Node> nodes;
+    // 没有权限的topic集合
     private final Set<String> unauthorizedTopics;
+    // <topic和partition的id， partition具体信息>
     private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition;
+    // 每个topic上的partitions
     private final Map<String, List<PartitionInfo>> partitionsByTopic;
+    // 每个topic上可用的partitions(leader partition)
     private final Map<String, List<PartitionInfo>> availablePartitionsByTopic;
+    // 每个broker上的partitions
     private final Map<Integer, List<PartitionInfo>> partitionsByNode;
     private final Map<Integer, Node> nodesById;
 

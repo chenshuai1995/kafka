@@ -59,20 +59,20 @@ public final class RecordAccumulator {
 
     private static final Logger log = LoggerFactory.getLogger(RecordAccumulator.class);
 
-    private volatile boolean closed;
+    private volatile boolean closed;// Sender线程准备关闭
     private final AtomicInteger flushesInProgress;
     private final AtomicInteger appendsInProgress;
-    private final int batchSize;
-    private final CompressionType compression;
+    private final int batchSize;// 指定每个RecordBatch底层的ByteBuffer的大小
+    private final CompressionType compression;// 压缩类型
     private final long lingerMs;
     private final long retryBackoffMs;
-    private final BufferPool free;
+    private final BufferPool free;// BufferPool内存缓冲池
     private final Time time;
-    private final ConcurrentMap<TopicPartition, Deque<RecordBatch>> batches;
-    private final IncompleteRecordBatches incomplete;
+    private final ConcurrentMap<TopicPartition, Deque<RecordBatch>> batches;// 映射TopicPartition和RecordBatch队列的关系
+    private final IncompleteRecordBatches incomplete;// 未发送完成的RecordBatch集合
     // The following variables are only accessed by the sender thread, so we don't need to protect them.
     private final Set<TopicPartition> muted;
-    private int drainIndex;
+    private int drainIndex;// 使用drain方法批量到处RecordBatch时，用于记录上次发送停止时的位置
 
     /**
      * Create a new record accumulator
@@ -103,6 +103,9 @@ public final class RecordAccumulator {
         this.compression = compression;
         this.lingerMs = lingerMs;
         this.retryBackoffMs = retryBackoffMs;
+        // copyOnWriteXX，基于volatile和内存快照副本实现的，适合读多写少场景。
+        // 优点，读写锁没有长时间互斥，写的时候不会阻塞读。缺点是内存占用多
+        // producer这边多线程主要在内存缓冲区这块
         this.batches = new CopyOnWriteMap<>();
         String metricGrpName = "producer-metrics";
         this.free = new BufferPool(totalSize, batchSize, metrics, time, metricGrpName);
@@ -166,36 +169,54 @@ public final class RecordAccumulator {
         appendsInProgress.incrementAndGet();
         try {
             // check if we have an in-progress batch
+            // 查找TopicPartition对应的Deque
             Deque<RecordBatch> dq = getOrCreateDeque(tp);
-            synchronized (dq) {
+            synchronized (dq) {// 对Deque加锁
                 if (closed)
                     throw new IllegalStateException("Cannot send after the producer is closed.");
+                // 第一次检查
+                // 向Deque最后一个RecordBatch追加Record
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
                 if (appendResult != null)
-                    return appendResult;
+                    return appendResult;// 追加成功，则直接返回
             }
 
             // we don't have an in-progress record batch try to allocate a new batch
+            // 追加失败，从BufferPool中申请空间
+            // 这里可以看出，要分配的size，比batchSize小，没事。会取max，也就是默认的batchSize=16kb
             int size = Math.max(this.batchSize, Records.LOG_OVERHEAD + Record.recordSize(key, value));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
             ByteBuffer buffer = free.allocate(size, maxTimeToBlock);
+            // 如果上面有多个线程每个线程分配到了16kb的内存
+            // 这里2次分别对Deque加锁，是为了减少锁持有的时间
+            // 如果上面的的free.allocate放到一段的synchronized代码块里，如果分配的size比较大，会一直要等整个锁执行完才行
+            // 如果把free.allocate放到synchronized代码块外，多个线程可以争抢，如果之前的线程觉得size太小，不够自己用的。万一有其他线程想要分配的size正好比这个size小，那就可以了
             synchronized (dq) {
                 // Need to check if producer is closed again after grabbing the dequeue lock.
                 if (closed)
                     throw new IllegalStateException("Cannot send after the producer is closed.");
 
+                // 第二次检查
+                // 刚开始执行tryAppend，Deque<RecordBatch>里面是空的，所以取出的batch也是空的，然后往deque里添加batch
+                // 第二次其他线程来执行时tryAppend返回的就不是null
+                // 对Deque加锁后，再次调用tryAppend方法尝试追加Record
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
-                if (appendResult != null) {
+                if (appendResult != null) {// 追加成功，则返回
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
-                    free.deallocate(buffer);
+                    // 取消分配byteBuffer，释放上面申请的新空间
+                    free.deallocate(buffer);// BuffPool的内存复用，每次通过MemoryRecords.append()的IO流方式写数据出去
                     return appendResult;
                 }
                 MemoryRecords records = MemoryRecords.emptyRecords(buffer, compression, this.batchSize);
+                // 最终把MemoryRecord封装到RecordBatch
                 RecordBatch batch = new RecordBatch(tp, records, time.milliseconds());
+                // 在新创建的RecordBatch中追加Record，并将其添加到batches集合中
                 FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
 
                 dq.addLast(batch);
+                // 将新建的RecordBatch追加到incomplete集合中
                 incomplete.add(batch);
+                // 返回RecordAppendResult
                 return new RecordAppendResult(future, dq.size() > 1 || batch.records.isFull(), true);
             }
         } finally {
@@ -208,8 +229,10 @@ public final class RecordAccumulator {
      * resources (like compression streams buffers).
      */
     private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Callback callback, Deque<RecordBatch> deque) {
+        // 取出queue最上面的，也是最后的那个元素（先进后出）
         RecordBatch last = deque.peekLast();
         if (last != null) {
+            // 往batch里写数据
             FutureRecordMetadata future = last.tryAppend(timestamp, key, value, callback, time.milliseconds());
             if (future == null)
                 last.records.close();
@@ -297,28 +320,31 @@ public final class RecordAccumulator {
      * </ol>
      */
     public ReadyCheckResult ready(Cluster cluster, long nowMs) {
-        Set<Node> readyNodes = new HashSet<>();
-        long nextReadyCheckDelayMs = Long.MAX_VALUE;
+        Set<Node> readyNodes = new HashSet<>();// 记录可以向哪些node节点发送消息
+        long nextReadyCheckDelayMs = Long.MAX_VALUE;// 记录下次需要调用ready()方法的时间间隔
         boolean unknownLeadersExist = false;
 
+        // 判断是否内存耗尽
         boolean exhausted = this.free.queued() > 0;
+        // 遍历batches集合，对其中每个分区的Leader副本所在的node都进行判断
         for (Map.Entry<TopicPartition, Deque<RecordBatch>> entry : this.batches.entrySet()) {
             TopicPartition part = entry.getKey();
             Deque<RecordBatch> deque = entry.getValue();
 
-            Node leader = cluster.leaderFor(part);
+            Node leader = cluster.leaderFor(part);// 查找各分区leader所在的node
             if (leader == null) {
                 unknownLeadersExist = true;
             } else if (!readyNodes.contains(leader) && !muted.contains(part)) {
                 synchronized (deque) {
+                    // 取出deque的最早一个batch
                     RecordBatch batch = deque.peekFirst();
                     if (batch != null) {
                         boolean backingOff = batch.attempts > 0 && batch.lastAttemptMs + retryBackoffMs > nowMs;
                         long waitedTimeMs = nowMs - batch.lastAttemptMs;
                         long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
                         long timeLeftMs = Math.max(timeToWaitMs - waitedTimeMs, 0);
-                        boolean full = deque.size() > 1 || batch.records.isFull();
-                        boolean expired = waitedTimeMs >= timeToWaitMs;
+                        boolean full = deque.size() > 1 || batch.records.isFull();// deque中有多个RecordBatch或第一个RecordBatch是否满了
+                        boolean expired = waitedTimeMs >= timeToWaitMs;// 是否超时了
                         boolean sendable = full || expired || exhausted || closed || flushInProgress();
                         if (sendable && !backingOff) {
                             readyNodes.add(leader);
@@ -443,6 +469,7 @@ public final class RecordAccumulator {
      *
      * package private for test
      */
+    // 是否有线程正在等待flush操作完成
     boolean flushInProgress() {
         return flushesInProgress.get() > 0;
     }

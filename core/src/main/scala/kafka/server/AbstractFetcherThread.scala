@@ -86,8 +86,9 @@ abstract class AbstractFetcherThread(name: String,
   override def doWork() {
 
     val fetchRequest = inLock(partitionMapLock) {
+      // 创建FetchRequest请求
       val fetchRequest = buildFetchRequest(partitionMap)
-      if (fetchRequest.isEmpty) {
+      if (fetchRequest.isEmpty) {// 没有fetchRequest请求，则等待一段时间重试
         trace("There are no active partitions. Back off for %d ms before sending a fetch request".format(fetchBackOffMs))
         partitionMapCond.await(fetchBackOffMs, TimeUnit.MILLISECONDS)
       }
@@ -95,6 +96,7 @@ abstract class AbstractFetcherThread(name: String,
     }
 
     if (!fetchRequest.isEmpty)
+      // 发送FetchRequest并处理FetchResponse
       processFetchRequest(fetchRequest)
   }
 
@@ -104,6 +106,7 @@ abstract class AbstractFetcherThread(name: String,
 
     try {
       trace("Issuing to broker %d of fetch request %s".format(sourceBroker.id, fetchRequest))
+      // 发送FetchRequest并等待FetchResponse
       responseData = fetch(fetchRequest)
     } catch {
       case t: Throwable =>
@@ -126,20 +129,23 @@ abstract class AbstractFetcherThread(name: String,
           val TopicAndPartition(topic, partitionId) = topicAndPartition
           partitionMap.get(topicAndPartition).foreach(currentPartitionFetchState =>
             // we append to the log if the current offset is defined and it is the same as the offset requested during fetch
+            // 从发送FetchRequest到收到FetchResponse这段同步时间内，offset并未发生变化
             if (fetchRequest.offset(topicAndPartition) == currentPartitionFetchState.offset) {
               Errors.forCode(partitionData.errorCode) match {
                 case Errors.NONE =>
                   try {
                     val messages = partitionData.toByteBufferMessageSet
                     val validBytes = messages.validBytes
+                    // 获取返回的最后一条消息的offset
                     val newOffset = messages.shallowIterator.toSeq.lastOption match {
                       case Some(m: MessageAndOffset) => m.nextOffset
                       case None => currentPartitionFetchState.offset
                     }
-                    partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
+                    partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))// 更新Fetch状态
                     fetcherLagStats.getAndMaybePut(topic, partitionId).lag = Math.max(0L, partitionData.highWatermark - newOffset)
                     fetcherStats.byteRate.mark(validBytes)
                     // Once we hand off the partition data to the subclass, we can't mess with it any more in this thread
+                    // 将从Leader副本获取的消息集合追加到Log中
                     processPartitionData(topicAndPartition, currentPartitionFetchState.offset, partitionData)
                   } catch {
                     case ime: CorruptRecordException =>
@@ -153,9 +159,11 @@ abstract class AbstractFetcherThread(name: String,
                         .format(topic, partitionId, currentPartitionFetchState.offset), e)
                   }
                 case Errors.OFFSET_OUT_OF_RANGE =>
+                  // 若Follower副本请求的offset超出了Leader的LEO，则返回此错误码
                   try {
+                    // 生成新的offset，handleOffsetOutOfRange()是抽象方法
                     val newOffset = handleOffsetOutOfRange(topicAndPartition)
-                    partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
+                    partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))// 更新Fetch状态
                     error("Current offset %d for partition [%s,%d] out of range; reset offset to %d"
                       .format(currentPartitionFetchState.offset, topic, partitionId, newOffset))
                   } catch {
@@ -186,12 +194,14 @@ abstract class AbstractFetcherThread(name: String,
     try {
       for ((topicAndPartition, offset) <- partitionAndOffsets) {
         // If the partitionMap already has the topic/partition, then do not update the map with the old offset
+        // 检测指定分区是否已经存在
         if (!partitionMap.contains(topicAndPartition))
           partitionMap.put(
             topicAndPartition,
             if (PartitionTopicInfo.isOffsetInvalid(offset)) new PartitionFetchState(handleOffsetOutOfRange(topicAndPartition))
             else new PartitionFetchState(offset)
           )}
+      // 唤醒当前fetcher线程，进行同步操作
       partitionMapCond.signalAll()
     } finally partitionMapLock.unlock()
   }

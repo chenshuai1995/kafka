@@ -41,17 +41,17 @@ import java.io.{IOException, File}
  * @param time The time instance
  */
 @nonthreadsafe
-class LogSegment(val log: FileMessageSet,
-                 val index: OffsetIndex,
-                 val baseOffset: Long,
-                 val indexIntervalBytes: Int,
+class LogSegment(val log: FileMessageSet,// 用于操作对应日志文件的FileMessageSet对象
+                 val index: OffsetIndex,// 用于操作对应索引文件的OffsetIndex对象
+                 val baseOffset: Long,// LogSegment中第一条消息的offset值
+                 val indexIntervalBytes: Int,// 索引项之间间隔的最小字节数
                  val rollJitterMs: Long,
                  time: Time) extends Logging {
 
-  var created = time.milliseconds
+  var created = time.milliseconds// LogSetment创建的时间
 
   /* the number of bytes since we last added an entry in the offset index */
-  private var bytesSinceLastIndexEntry = 0
+  private var bytesSinceLastIndexEntry = 0// 记录自从上次添加索引项后，在日志文件中累计加入的Message集合的字节数，用于判断下次添加索引项的时机
 
   def this(dir: File, startOffset: Long, indexIntervalBytes: Int, maxIndexSize: Int, rollJitterMs: Long, time: Time, fileAlreadyExists: Boolean = false, initFileSize: Int = 0, preallocate: Boolean = false) =
     this(new FileMessageSet(file = Log.logFilename(dir, startOffset), fileAlreadyExists = fileAlreadyExists, initFileSize = initFileSize, preallocate = preallocate),
@@ -78,12 +78,15 @@ class LogSegment(val log: FileMessageSet,
     if (messages.sizeInBytes > 0) {
       trace("Inserting %d bytes at offset %d at position %d".format(messages.sizeInBytes, offset, log.sizeInBytes()))
       // append an entry to the index (if needed)
+      // 检查是否满足添加索引项的条件
       if(bytesSinceLastIndexEntry > indexIntervalBytes) {
-        index.append(offset, log.sizeInBytes())
+        index.append(offset, log.sizeInBytes())// 添加索引
+        // 成功添加索引后，bytesSinceLastIndexEntry重置为0
         this.bytesSinceLastIndexEntry = 0
       }
       // append the messages
-      log.append(messages)
+      log.append(messages)// 写日志文件
+      // 更新bytesSinceLastIndexEntry
       this.bytesSinceLastIndexEntry += messages.sizeInBytes
     }
   }
@@ -124,6 +127,7 @@ class LogSegment(val log: FileMessageSet,
       throw new IllegalArgumentException("Invalid max size for log read (%d)".format(maxSize))
 
     val logSize = log.sizeInBytes // this may change, need to save a consistent copy
+    // 将startOffset转换为物理地址
     val startPosition = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null
@@ -140,6 +144,7 @@ class LogSegment(val log: FileMessageSet,
     val length = maxOffset match {
       case None =>
         // no max offset, just read until the max position
+        // maxOffset为空，则由maxPosition，maxSize共同决定读取长度
         min((maxPosition - startPosition.position).toInt, maxSize)
       case Some(offset) =>
         // there is a max offset, translate it to a file position and use that to calculate the max read size;
@@ -148,14 +153,17 @@ class LogSegment(val log: FileMessageSet,
         // offset between new leader's high watermark and the log end offset, we want to return an empty response.
         if(offset < startOffset)
           return FetchDataInfo(offsetMetadata, MessageSet.Empty)
+        // 将maxOffset转换成物理地址
         val mapping = translateOffset(offset, startPosition.position)
         val endPosition =
           if(mapping == null)
             logSize // the max offset is off the end of the log, use the end of the file
           else
             mapping.position
+        // 由maxOffset、maxPosition、maxSize共同决定读取长度
         min(min(maxPosition, endPosition) - startPosition.position, maxSize).toInt
     }
+    // maxOffset通常是Replica的HW，既消费者只能最多读取到hw这个位置
 
     FetchDataInfo(offsetMetadata, log.read(startPosition.position, length))
   }
@@ -169,38 +177,41 @@ class LogSegment(val log: FileMessageSet,
    * @return The number of bytes truncated from the log
    */
   @nonthreadsafe
+  // 根据日志文件重建索引文件
   def recover(maxMessageSize: Int): Int = {
+    // 清空索引文件，底层只是移动position指针，后续的写入会覆盖原有的内容
     index.truncate()
-    index.resize(index.maxIndexSize)
-    var validBytes = 0
-    var lastIndexEntry = 0
-    val iter = log.iterator(maxMessageSize)
+    index.resize(index.maxIndexSize)// 修改索引文件大小
+    var validBytes = 0// 记录已经通过验证的字节数
+    var lastIndexEntry = 0// 最后一个索引项对应的物理地址
+    val iter = log.iterator(maxMessageSize)// FileMessageSet迭代器
     try {
       while(iter.hasNext) {
         val entry = iter.next
-        entry.message.ensureValid()
+        entry.message.ensureValid()// 验证Message是否合法，验证失败就抛异常
+        // 符合添加索引项的条件
         if(validBytes - lastIndexEntry > indexIntervalBytes) {
           // we need to decompress the message, if required, to get the offset of the first uncompressed message
           val startOffset =
             entry.message.compressionCodec match {
               case NoCompressionCodec =>
                 entry.offset
-              case _ =>
+              case _ => // 压缩消息解压缩，获取其第一个消息的offset
                 ByteBufferMessageSet.deepIterator(entry).next().offset
           }
-          index.append(startOffset, validBytes)
-          lastIndexEntry = validBytes
+          index.append(startOffset, validBytes)// 添加索引项
+          lastIndexEntry = validBytes// 修改lastIndexEntry
         }
-        validBytes += MessageSet.entrySize(entry.message)
+        validBytes += MessageSet.entrySize(entry.message)// 累加validBytes
       }
     } catch {
       case e: CorruptRecordException =>
         logger.warn("Found invalid messages in log segment %s at byte offset %d: %s.".format(log.file.getAbsolutePath, validBytes, e.getMessage))
     }
     val truncated = log.sizeInBytes - validBytes
-    log.truncateTo(validBytes)
-    index.trimToValidSize()
-    truncated
+    log.truncateTo(validBytes)// 对日志文件进行截断，抛弃后面验证失败的Message
+    index.trimToValidSize()// 对索引文件进行相应截断
+    truncated// 返回截掉的字节数
   }
 
   override def toString() = "LogSegment(baseOffset=" + baseOffset + ", size=" + size + ")"

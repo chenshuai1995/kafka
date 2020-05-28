@@ -48,20 +48,28 @@ import kafka.common.TopicAndPartition
 
 class ControllerContext(val zkUtils: ZkUtils,
                         val zkSessionTimeout: Int) {
+  // 管理Controller和集群中Broker之间的连接
   var controllerChannelManager: ControllerChannelManager = null
   val controllerLock: ReentrantLock = new ReentrantLock()
+  // 正在关闭的BrokerId集合
   var shuttingDownBrokerIds: mutable.Set[Int] = mutable.Set.empty
   val brokerShutdownLock: Object = new Object
+  // Controller的年代信息
   var epoch: Int = KafkaController.InitialControllerEpoch - 1
+  // 年代信息的zk版本
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion - 1
   var allTopics: Set[String] = Set.empty
+  // 每个分区的AR集合
   var partitionReplicaAssignment: mutable.Map[TopicAndPartition, Seq[Int]] = mutable.Map.empty
+  // 每个分区Leader副本所在的BrokerId、ISR集合以及controller_epoch等信息
   var partitionLeadershipInfo: mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = mutable.Map.empty
+  // 正在重新分配副本的分区
   val partitionsBeingReassigned: mutable.Map[TopicAndPartition, ReassignedPartitionsContext] = new mutable.HashMap
+  // 正在进行“优先副本”选举的分区
   val partitionsUndergoingPreferredReplicaElection: mutable.Set[TopicAndPartition] = new mutable.HashSet
 
-  private var liveBrokersUnderlying: Set[Broker] = Set.empty
-  private var liveBrokerIdsUnderlying: Set[Int] = Set.empty
+  private var liveBrokersUnderlying: Set[Broker] = Set.empty// 当前可用的Broker集合
+  private var liveBrokerIdsUnderlying: Set[Int] = Set.empty// 当前可用的BrokerId集合
 
   // setter
   def liveBrokers_=(brokers: Set[Broker]) {

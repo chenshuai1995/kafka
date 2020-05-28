@@ -106,6 +106,7 @@ public class Selector implements Selectable {
      */
     public Selector(int maxReceiveSize, long connectionMaxIdleMs, Metrics metrics, Time time, String metricGrpPrefix, Map<String, String> metricTags, boolean metricsPerConnection, ChannelBuilder channelBuilder) {
         try {
+            // 通过NIO获取一个Java NIO的Selector
             this.nioSelector = java.nio.channels.Selector.open();
         } catch (IOException e) {
             throw new KafkaException(e);
@@ -115,6 +116,7 @@ public class Selector implements Selectable {
         this.time = time;
         this.metricGrpPrefix = metricGrpPrefix;
         this.metricTags = metricTags;
+        // <BrokerId, KafkaChannel>
         this.channels = new HashMap<>();
         this.completedSends = new ArrayList<>();
         this.completedReceives = new ArrayList<>();
@@ -154,15 +156,16 @@ public class Selector implements Selectable {
         if (this.channels.containsKey(id))
             throw new IllegalStateException("There is already a connection for id " + id);
 
+        // 这边都是NIO的经典用法，先获取一个SocketChannel，用于socket连接的
         SocketChannel socketChannel = SocketChannel.open();
-        socketChannel.configureBlocking(false);
-        Socket socket = socketChannel.socket();
-        socket.setKeepAlive(true);
+        socketChannel.configureBlocking(false);// 设置成非阻塞的
+        Socket socket = socketChannel.socket();// 通过socketChannel拿到一个socket
+        socket.setKeepAlive(true);// 设置keepalive，保持存活，设置长连接
         if (sendBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
-            socket.setSendBufferSize(sendBufferSize);
+            socket.setSendBufferSize(sendBufferSize);// 设置发送时的buffer缓冲大小128k
         if (receiveBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
-            socket.setReceiveBufferSize(receiveBufferSize);
-        socket.setTcpNoDelay(true);
+            socket.setReceiveBufferSize(receiveBufferSize);// 设置接收时的buffer缓冲大小32k
+        socket.setTcpNoDelay(true);// 设置为true，有小包的网络请求，也会立即发送，没有延迟。如果是false的话，会把很多个小包打成一个打包请求过去
         boolean connected;
         try {
             connected = socketChannel.connect(address);
@@ -182,7 +185,7 @@ public class Selector implements Selectable {
             // OP_CONNECT won't trigger for immediately connected channels
             log.debug("Immediately connected to node {}", channel.id());
             immediatelyConnectedKeys.add(key);
-            key.interestOps(0);
+            key.interestOps(0);// public static final int OP_READ = 1 << 0;
         }
     }
 
@@ -274,12 +277,14 @@ public class Selector implements Selectable {
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
+        // 调用NIO的Selector的select()
         int readyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         currentTimeNanos = endSelect;
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
 
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
+            // 根据SelectionKey处理逻辑，处理I/O事件
             pollSelectionKeys(this.nioSelector.selectedKeys(), false);
             pollSelectionKeys(immediatelyConnectedKeys, true);
         }
@@ -300,12 +305,14 @@ public class Selector implements Selectable {
 
             // register all per-connection metrics at once
             sensors.maybeRegisterConnectionMetrics(channel.id());
-            lruConnections.put(channel.id(), currentTimeNanos);
+            lruConnections.put(channel.id(), currentTimeNanos);// 更新lru信息
 
             try {
 
                 /* complete any connections that have finished their handshake (either normally or immediately) */
+                // 对connect方法返回true或OP_CONNECTION事件处理
                 if (isImmediatelyConnected || key.isConnectable()) {
+                    // finishConnect方法会先检测socketChannel是否建立完成，建立后，会取消对OP_CONNECT事件关注，开始关注OP_READ事件
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
                         this.sensors.connectionCreated.record();
@@ -314,19 +321,27 @@ public class Selector implements Selectable {
                 }
 
                 /* if channel is not ready finish prepare */
+                // 调用KafkaChannel.prepare()方法进行身份验证
                 if (channel.isConnected() && !channel.ready())
                     channel.prepare();
 
                 /* if channel is ready read from any connections that have readable data */
-                if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
+                if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {// OP_READ事件处理
                     NetworkReceive networkReceive;
+                    // 这里的read()处理了NIO的粘包拆包
                     while ((networkReceive = channel.read()) != null)
+                        // 如果上面的read读取不到一个完整的NetworkReceive，则将其添加到stagedRecieves中保存。
+                        // 如果读取不到一个完整的NetworkReceive，则返回null，下次处理OP_READ事件时，继续读取，直到读取一个完整的NetworkReceive
                         addToStagedReceives(channel, networkReceive);
                 }
 
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
-                if (channel.ready() && key.isWritable()) {
+                // 写数据
+                if (channel.ready() && key.isWritable()) {// OP_WRITE事件处理
                     Send send = channel.write();
+                    // 上面的channel.write()方法将KafkaChannel.send字段发送出去，
+                    // 如果未完成发送，返回null，
+                    // 如果发送完成，则返回send，并添加到completedSends集合中，待后续处理
                     if (send != null) {
                         this.completedSends.add(send);
                         this.sensors.recordBytesSent(channel.id(), send.size());

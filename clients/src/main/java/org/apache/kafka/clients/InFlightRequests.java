@@ -23,6 +23,7 @@ import java.util.Map;
 /**
  * The set of requests which have been sent or are being sent but haven't yet received a response
  */
+// 主要作用是缓存了已经发送出去，但是没有收到响应的ClientRequest
 final class InFlightRequests {
 
     private final int maxInFlightRequestsPerConnection;

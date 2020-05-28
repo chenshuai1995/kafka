@@ -155,6 +155,7 @@ public final class Record {
     }
 
     public static void write(Compressor compressor, long crc, byte attributes, long timestamp, byte[] key, byte[] value, int valueOffset, int valueSize) {
+        // 按照二进制协议规范，写数据到ByteBuffer中
         // write crc
         compressor.putInt((int) (crc & 0xffffffffL));
         // write magic value
@@ -185,6 +186,7 @@ public final class Record {
     }
 
     public static int recordSize(int keySize, int valueSize) {
+        // kafka 消息协议的规则
         return CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTE_LENGTH + TIMESTAMP_LENGTH + KEY_SIZE_LENGTH + keySize + VALUE_SIZE_LENGTH + valueSize;
     }
 

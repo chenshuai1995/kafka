@@ -30,18 +30,22 @@ public class MemoryRecords implements Records {
     private final static int WRITE_LIMIT_FOR_READABLE_ONLY = -1;
 
     // the compressor used for appends-only
+    // 压缩器
     private final Compressor compressor;
 
     // the write limit for writable buffer, which may be smaller than the buffer capacity
+    // 记录buffer字段最多可以写多少个字节的数据
     private final int writeLimit;
 
     // the capacity of the initial buffer, which is only used for de-allocation of writable records
     private final int initialCapacity;
 
     // the underlying buffer used for read; while the records are still writable it is null
+    // 用于保存消息的NIO ByteBuffer
     private ByteBuffer buffer;
 
     // indicate if the memory records is writable or not (i.e. used for appends or read-only)
+    // MemoryRecords是只读模式，还是只写模式。在MemoryRecords发送前，将其设置成只读模式
     private boolean writable;
 
     // Construct a writable memory records
@@ -75,10 +79,12 @@ public class MemoryRecords implements Records {
      * Append the given record and offset to the buffer
      */
     public void append(long offset, Record record) {
+        // 先判断是否是可写模式
         if (!writable)
             throw new IllegalStateException("Memory records is not writable");
 
         int size = record.size();
+        // 将消息写入到ByteBuffer中
         compressor.putLong(offset);
         compressor.putInt(size);
         compressor.put(record.buffer());
@@ -114,6 +120,7 @@ public class MemoryRecords implements Records {
      * the checking should be based on the capacity of the initialized buffer rather than the write limit in order
      * to accept this single record.
      */
+    // 检查是否有空间让一条新的记录写进来
     public boolean hasRoomFor(byte[] key, byte[] value) {
         if (!this.writable)
             return false;
@@ -149,8 +156,10 @@ public class MemoryRecords implements Records {
      */
     public int sizeInBytes() {
         if (writable) {
+            // 对于可写的MemoryRecords，返回的是ByteBufferOutputStream.buffer字段的大小
             return compressor.buffer().position();
         } else {
+            // 对于可读的MemoryRecords，返回的是MemoryRecords.buffer的大小
             return buffer.limit();
         }
     }

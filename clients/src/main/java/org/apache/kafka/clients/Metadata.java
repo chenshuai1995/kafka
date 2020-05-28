@@ -37,15 +37,25 @@ public final class Metadata {
 
     private static final Logger log = LoggerFactory.getLogger(Metadata.class);
 
+    // 2次元数据更新的最小时间差，默认100ms，防止频繁的更新。在重试相关的地方，都有“退避(backoff)时间”的设计
     private final long refreshBackoffMs;
+    // 间隔多久元数据更新，默认5分钟
     private final long metadataExpireMs;
+    // kafka集群元数据的版本号，每次元数据更新一次，元数据+1
     private int version;
+    // 上次更新元数据的时间（包括失败的元数据更新）
     private long lastRefreshMs;
+    // 上次成功更新元数据的时间
     private long lastSuccessfulRefreshMs;
+    // Cluster里有所有元数据的信息，Node，TopicPartition，PartitionInfo
     private Cluster cluster;
     private boolean needUpdate;
     private final Set<String> topics;
+    // 监听Metadata更新的监听器集合。
+    // 自定义Metadata监听实现Metadata.Listener.onMetadataUpdate()方法即可，
+    // 在更新Metadata中的cluster字段之前，会通知listener集合中的所有Listener对象
     private final List<Listener> listeners;
+    // 是否需要更新全部topic的元数据
     private boolean needMetadataForAllTopics;
 
     /**
@@ -124,6 +134,7 @@ public final class Metadata {
         }
         long begin = System.currentTimeMillis();
         long remainingWaitMs = maxWaitMs;
+        // 直到当前的版本大于上一次的版本
         while (this.version <= lastVersion) {
             if (remainingWaitMs != 0)
                 wait(remainingWaitMs);
@@ -164,10 +175,14 @@ public final class Metadata {
     /**
      * Update the cluster metadata
      */
+    // 更新元数据
+    // cluster有可能是producer初始化，根据配置的broker地址封装的cluster
+    // 也有可能是，从MetadataResponse中的body获取的cluster
     public synchronized void update(Cluster cluster, long now) {
         this.needUpdate = false;
         this.lastRefreshMs = now;
         this.lastSuccessfulRefreshMs = now;
+        // 版本号更新
         this.version += 1;
 
         for (Listener listener: listeners)
@@ -176,6 +191,7 @@ public final class Metadata {
         // Do this after notifying listeners as subscribed topics' list can be changed by listeners
         this.cluster = this.needMetadataForAllTopics ? getClusterForCurrentTopics(cluster) : cluster;
 
+        // 唤醒执行Metadata的awaitUpdate方法的主线程
         notifyAll();
         log.debug("Updated cluster metadata version {} to {}", this.version, this.cluster);
     }

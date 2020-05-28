@@ -48,6 +48,7 @@ object RequestChannel extends Logging {
   case class Request(processor: Int, connectionId: String, session: Session, private var buffer: ByteBuffer, startTimeMs: Long, securityProtocol: SecurityProtocol) {
     // These need to be volatile because the readers are in the network thread and the writers are in the request
     // handler threads or the purgatory threads
+    // @volatile保证线程可见性
     @volatile var requestDequeueTimeMs = -1L
     @volatile var apiLocalCompleteTimeMs = -1L
     @volatile var responseCompleteTimeMs = -1L
@@ -176,9 +177,16 @@ object RequestChannel extends Logging {
   case object CloseConnectionAction extends ResponseAction
 }
 
+// RequestChannel是Processor线程和Handler线程之间传递数据的
 class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMetricsGroup {
+  // numProcessors：processor线程个数
+  // queueSize：缓存请求的最大个数
+
+  // 监听器列表，主要是handler线程向responseQueue存放响应时唤醒对应的Processor线程
   private var responseListeners: List[(Int) => Unit] = Nil
+  // processor线程向handler线程发送请求的队列。因为有多个processor和多个handler线程并发操作，ArrayBlockingQueue线程安全
   private val requestQueue = new ArrayBlockingQueue[RequestChannel.Request](queueSize)
+  // handler线程向processor线程发送响应的队列
   private val responseQueues = new Array[BlockingQueue[RequestChannel.Response]](numProcessors)
   for(i <- 0 until numProcessors)
     responseQueues(i) = new LinkedBlockingQueue[RequestChannel.Response]()
@@ -209,23 +217,26 @@ class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMe
   }
 
   /** Send a response back to the socket server to be sent over the network */
+  // 向对应responseQueue队列中添加SendAction类型的Response
   def sendResponse(response: RequestChannel.Response) {
     responseQueues(response.processor).put(response)
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)// 调用responseListeners集合中的监听器
       onResponse(response.processor)
   }
 
   /** No operation to take for the request, need to read more over the network */
+  // 向对应responseQueue队列中添加NoOpAction类型的Response
   def noOperation(processor: Int, request: RequestChannel.Request) {
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.NoOpAction))
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)// 调用responseListeners集合中的监听器
       onResponse(processor)
   }
 
   /** Close the connection for the request */
+  // 向对应responseQueue队列中添加CloseConnectionAction类型的Response
   def closeConnection(processor: Int, request: RequestChannel.Request) {
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.CloseConnectionAction))
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)// 调用responseListeners集合中的监听器
       onResponse(processor)
   }
 

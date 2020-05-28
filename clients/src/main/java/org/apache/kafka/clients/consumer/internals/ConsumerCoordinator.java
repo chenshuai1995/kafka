@@ -73,6 +73,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     private final ConsumerInterceptors<?, ?> interceptors;
     private final boolean excludeInternalTopics;
 
+    // 用来存储Metadata的快照信息，主要用来检测topic是否发生了分区数量变化
     private MetadataSnapshot metadataSnapshot;
     private MetadataSnapshot assignmentSnapshot;
 
@@ -147,11 +148,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             @Override
             public void onMetadataUpdate(Cluster cluster) {
 
+                // AUTO_PARTERN模式的处理
                 if (subscriptions.hasPatternSubscription()) {
 
                     Set<String> unauthorizedTopics = new HashSet<String>();
                     for (String topic : cluster.unauthorizedTopics()) {
-                        if (filterTopic(topic))
+                        if (filterTopic(topic))// 通过subscribedPattern匹配的topic
                             unauthorizedTopics.add(topic);
                     }
                     if (!unauthorizedTopics.isEmpty())
@@ -163,6 +165,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                         if (filterTopic(topic))
                             topicsToSubscribe.add(topic);
 
+                    // 更新
                     subscriptions.changeSubscription(topicsToSubscribe);
                     metadata.setTopics(subscriptions.groupSubscription());
                 } else if (!cluster.unauthorizedTopics().isEmpty()) {

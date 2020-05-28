@@ -110,6 +110,7 @@ class ReplicaFetcherThread(name: String,
   }
 
   // process fetched data
+  // 将fetch()方法返回来的消息追加到Follower副本的Log中，并更新Follower副本的HW
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: PartitionData) {
     try {
       val TopicAndPartition(topic, partitionId) = topicAndPartition
@@ -122,10 +123,12 @@ class ReplicaFetcherThread(name: String,
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d for partition %s. Received %d messages and leader hw %d"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, topicAndPartition, messageSet.sizeInBytes, partitionData.highWatermark))
+      // 将消息追加到Log中
       replica.log.get.append(messageSet, assignOffsets = false)
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d after appending %d bytes of messages for partition %s"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, messageSet.sizeInBytes, topicAndPartition))
+      // 更新Follower副本的HW
       val followerHighWatermark = replica.logEndOffset.messageOffset.min(partitionData.highWatermark)
       // for the follower replica, we do not need to keep
       // its segment base offset the physical position,
@@ -236,11 +239,13 @@ class ReplicaFetcherThread(name: String,
     import kafka.utils.NetworkClientBlockingOps._
     val header = apiVersion.fold(networkClient.nextRequestHeader(apiKey))(networkClient.nextRequestHeader(apiKey, _))
     try {
+      // 阻塞等待Node的状态变为Ready，超时则会抛出异常
       if (!networkClient.blockingReady(sourceNode, socketTimeout)(time))
         throw new SocketTimeoutException(s"Failed to connect within $socketTimeout ms")
       else {
         val send = new RequestSend(sourceBroker.id.toString, header, request.toStruct)
         val clientRequest = new ClientRequest(time.milliseconds(), true, send, null)
+        // 发送请求并阻塞等待响应
         networkClient.blockingSendAndReceive(clientRequest)(time)
       }
     }

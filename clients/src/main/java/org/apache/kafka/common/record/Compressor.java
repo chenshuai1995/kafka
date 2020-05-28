@@ -82,7 +82,9 @@ public class Compressor {
     });
 
     private final CompressionType type;
+    // 在下面的ByteBufferOutputStream基础上，增加了压缩的功能
     private final DataOutputStream appendStream;
+    // Kafka在ByteBuffer上封装了ByteBufferOutputStream，会自动扩容
     private final ByteBufferOutputStream bufferStream;
     private final int initPos;
 
@@ -108,6 +110,7 @@ public class Compressor {
 
         // create the stream
         bufferStream = new ByteBufferOutputStream(buffer);
+        // 根据压缩类型，创建合适的压缩流
         appendStream = wrapForOutput(bufferStream, type, COMPRESSION_DEFAULT_BUFFER_SIZE);
     }
 
@@ -248,9 +251,11 @@ public class Compressor {
                 case NONE:
                     return new DataOutputStream(buffer);
                 case GZIP:
+                    // 这里的GZIPOutputStream是JDK自带的包，所以可以直接new出来
                     return new DataOutputStream(new GZIPOutputStream(buffer, bufferSize));
                 case SNAPPY:
                     try {
+                        // snappy需要引入额外的包，为了在不使用snappy时，减少依赖包。所以使用反射的方式动态创建
                         OutputStream stream = (OutputStream) snappyOutputStreamSupplier.get().newInstance(buffer, bufferSize);
                         return new DataOutputStream(stream);
                     } catch (Exception e) {

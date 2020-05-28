@@ -23,6 +23,7 @@ import kafka.metrics.KafkaMetricsReporter
 import kafka.utils.{VerifiableProperties, Logging}
 
 object KafkaServerStartable {
+  // 类似于静态方法
   def fromProps(serverProps: Properties) = {
     KafkaMetricsReporter.startReporters(new VerifiableProperties(serverProps))
     new KafkaServerStartable(KafkaConfig.fromProps(serverProps))

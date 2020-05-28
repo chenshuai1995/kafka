@@ -94,6 +94,7 @@ public abstract class AbstractCoordinator implements Closeable {
     private boolean needsJoinPrepare = true;
     private boolean rejoinNeeded = true;
     protected Node coordinator;
+    // 服务端GroupCoordinator返回的分配给消费者唯一的id
     protected String memberId;
     protected String protocol;
     protected int generation;
@@ -173,6 +174,7 @@ public abstract class AbstractCoordinator implements Closeable {
     /**
      * Block until the coordinator for this group is known and is ready to receive requests.
      */
+    // 发送GroupCoordinatorRequest请求的入口
     public void ensureCoordinatorReady() {
         while (coordinatorUnknown()) {
             RequestFuture<Void> future = sendGroupCoordinatorRequest();
@@ -475,10 +477,12 @@ public abstract class AbstractCoordinator implements Closeable {
             // create a group  metadata request
             log.debug("Sending coordinator request for group {} to broker {}", groupId, node);
             GroupCoordinatorRequest metadataRequest = new GroupCoordinatorRequest(this.groupId);
+            // 发送
             return client.send(node, ApiKeys.GROUP_COORDINATOR, metadataRequest)
                     .compose(new RequestFutureAdapter<ClientResponse, Void>() {
                         @Override
                         public void onSuccess(ClientResponse response, RequestFuture<Void> future) {
+                            // 处理GroupMetadataResponse的入口
                             handleGroupMetadataResponse(response, future);
                         }
                     });
